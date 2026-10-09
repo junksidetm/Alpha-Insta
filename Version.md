@@ -16,3 +16,8 @@ This file is the permanent, immutable ledger of the `Alpha-Insta` project evolut
     - Official GitHub Release publication tagged `v<VERSION>` with downloadable standalone APKs.
   - `README.md`: Architecture overview, asset specifications, and downstream integration guidelines for `junksidetm/instafel`.
 - **Status**: 100% (Completed)
+## [2026-10-09 16:26:00 IST] - Release Creation & Asset Upload Resilience
+- **Action**: Corrected GitHub CLI release command syntax to conditionally execute `gh release create` for new tags or `gh release upload --clobber` for existing releases, eliminating invalid `--clobber` flag invocation on create.
+- **Components Modified**:
+  - `.github/workflows/fetch-and-release-alpha.yml`: Added branch logic checking if tag exists via `gh release view` before deciding between `create` and `upload`.
+- **Status**: 100% (Completed)

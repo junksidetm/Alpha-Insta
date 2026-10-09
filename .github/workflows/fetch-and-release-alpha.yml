@@ -159,13 +159,7 @@ jobs:
           OUTPUT_APK="${{ steps.merge_bundle.outputs.output_apk }}"
           SHA_VAL=$(cat "${OUTPUT_APK}.sha256" | awk '{print $1}')
 
-          gh release create "$TAG_NAME" \
-            "$OUTPUT_APK" \
-            "${OUTPUT_APK}.sha256" \
-            metadata.json \
-            --title "$RELEASE_TITLE" \
-            --clobber \
-            --notes "### Instagram Alpha Release v${VERSION}
+          NOTES="### Instagram Alpha Release v${VERSION}
           - **Architecture:** \`arm64-v8a\`
           - **Release Channel:** Official Instagram Alpha
           - **Source:** APKMirror Verified Ingest
@@ -175,3 +169,16 @@ jobs:
           ---
           #### Downstream Integration
           This release is automatically consumed by [junksidetm/instafel](https://github.com/junksidetm/instafel) for injecting custom typography and emoji engines."
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists. Uploading/updating release assets..."
+            gh release upload "$TAG_NAME" "$OUTPUT_APK" "${OUTPUT_APK}.sha256" metadata.json --clobber
+          else
+            echo "Creating new release $TAG_NAME..."
+            gh release create "$TAG_NAME" \
+              "$OUTPUT_APK" \
+              "${OUTPUT_APK}.sha256" \
+              metadata.json \
+              --title "$RELEASE_TITLE" \
+              --notes "$NOTES"
+          fi
