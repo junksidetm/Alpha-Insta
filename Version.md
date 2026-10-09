@@ -21,3 +21,11 @@ This file is the permanent, immutable ledger of the `Alpha-Insta` project evolut
 - **Components Modified**:
   - `.github/workflows/fetch-and-release-alpha.yml`: Added branch logic checking if tag exists via `gh release view` before deciding between `create` and `upload`.
 - **Status**: 100% (Completed)
+
+## [2026-10-09 19:28:00 IST] - Multi-Platform Mirror CI/CD Integration
+- **Action**: Added GitLab CI pipeline and Forgejo Actions workflow for autonomous crawler execution and syntax verification on mirror platforms.
+- **Components Added**:
+  - `.gitlab-ci.yml`: Node 22 crawler script syntax validation.
+  - `.forgejo/workflows/fetch-and-release-alpha.yml`: Codeberg Actions pipeline.
+  - `Version.md`: Appended tracking entry.
+- **Status**: 100% (Completed & Synced)

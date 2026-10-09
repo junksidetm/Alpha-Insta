@@ -1,0 +1,13 @@
+image: node:22-alpine
+
+stages:
+  - test
+
+lint-scripts:
+  stage: test
+  script:
+    - echo "Validating JavaScript crawler syntax..."
+    - node --check scripts/download-instagram-alpha.mjs
+    - echo "Syntax validation passed!"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"

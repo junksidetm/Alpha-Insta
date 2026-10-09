@@ -1,0 +1,184 @@
+name: Fetch & Release Instagram Alpha
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # Daily autonomous crawl at 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: 'Force release even if tag already exists'
+        type: boolean
+        default: false
+      target_version:
+        description: 'Specific version to fetch (leave blank for latest)'
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  sync_alpha:
+    runs-on: ubuntu-latest
+    name: Sync & Package Instagram Alpha
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Java 21 & Build Tools
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'oracle'
+          java-version: '21'
+
+      - name: Discover Latest Instagram Alpha Version
+        id: discover_version
+        env:
+          TARGET_VERSION: ${{ inputs.target_version }}
+          CHECK_ONLY: 'true'
+        run: |
+          echo "Checking APKMirror for newest Instagram Alpha release..."
+          node scripts/download-instagram-alpha.mjs
+
+      - name: Release Gate (Check Existing Release)
+        id: release_gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.discover_version.outputs.version }}"
+          echo "Discovered Alpha Version: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          if [ "${{ inputs.force_release }}" != "true" ]; then
+            if gh release view "v${VERSION}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+              echo "Release v${VERSION} already exists in ${{ github.repository }}!"
+              echo "No new Instagram Alpha release today or version already bundled. Skipping download to conserve resources."
+              echo "skip_release=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+          echo "New Alpha version detected or force_release enabled. Proceeding..."
+          echo "skip_release=false" >> $GITHUB_OUTPUT
+
+      - name: Download Instagram Alpha APKM
+        if: steps.release_gate.outputs.skip_release != 'true'
+        id: download_apkm
+        env:
+          TARGET_VERSION: ${{ steps.release_gate.outputs.version }}
+          DOWNLOAD_DIR: 'downloads'
+        run: |
+          echo "Streaming Instagram Alpha APKM from APKMirror..."
+          node scripts/download-instagram-alpha.mjs
+
+      - name: Unpack Bundle & Merge Splits into Standalone APK
+        if: steps.release_gate.outputs.skip_release != 'true'
+        id: merge_bundle
+        run: |
+          VERSION="${{ steps.release_gate.outputs.version }}"
+          DOWNLOADED_FILE="${{ steps.download_apkm.outputs.file_path }}"
+
+          echo "Downloading APKEditor tool..."
+          wget -q -O APKEditor.jar "https://github.com/REAndroid/APKEditor/releases/download/V1.4.5/APKEditor-1.4.5.jar"
+
+          OUTPUT_APK="instagram-alpha-v${VERSION}-arm64-v8a.apk"
+
+          echo "Unpacking APKM bundle..."
+          mkdir -p /tmp/inspect_zip
+          if command -v 7z >/dev/null 2>&1; then
+            7z x -y "$DOWNLOADED_FILE" -o/tmp/inspect_zip
+          else
+            unzip -q -o "$DOWNLOADED_FILE" -d /tmp/inspect_zip || python3 -m zipfile -e "$DOWNLOADED_FILE" /tmp/inspect_zip
+          fi
+
+          APK_COUNT=$(find /tmp/inspect_zip -name "*.apk" | wc -l)
+          echo "Found $APK_COUNT split APKs in bundle."
+
+          if [ "$APK_COUNT" -gt 1 ]; then
+            echo "Merging split APK bundle into standalone APK..."
+            mkdir -p /tmp/split_apks
+            cp /tmp/inspect_zip/*.apk /tmp/split_apks/
+            java -jar APKEditor.jar m -i /tmp/split_apks -o "$OUTPUT_APK"
+          elif [ "$APK_COUNT" -eq 1 ]; then
+            echo "Single APK found in archive. Copying directly..."
+            cp $(find /tmp/inspect_zip -name "*.apk" | head -n 1) "$OUTPUT_APK"
+          else
+            echo "Archive extraction fallback."
+            cp "$DOWNLOADED_FILE" "$OUTPUT_APK"
+          fi
+
+          rm -rf /tmp/inspect_zip /tmp/split_apks
+
+          echo "Generating SHA-256 checksum..."
+          sha256sum "$OUTPUT_APK" > "${OUTPUT_APK}.sha256"
+
+          # Generate metadata JSON
+          SHA_VAL=$(cat "${OUTPUT_APK}.sha256" | awk '{print $1}')
+          FILE_SIZE=$(stat -c%s "$OUTPUT_APK" 2>/dev/null || stat -f%z "$OUTPUT_APK" 2>/dev/null)
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          cat <<EOF > metadata.json
+          {
+            "version": "$VERSION",
+            "architecture": "arm64-v8a",
+            "channel": "alpha",
+            "fileName": "$OUTPUT_APK",
+            "sha256": "$SHA_VAL",
+            "fileSizeBytes": $FILE_SIZE,
+            "generatedAt": "$TIMESTAMP"
+          }
+          EOF
+
+          echo "output_apk=$OUTPUT_APK" >> $GITHUB_OUTPUT
+          ls -lh "$OUTPUT_APK" metadata.json
+
+      - name: Upload Clean Standalone APK Artifact
+        if: steps.release_gate.outputs.skip_release != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: instagram-alpha-${{ steps.release_gate.outputs.version }}-arm64-v8a
+          path: |
+            ${{ steps.merge_bundle.outputs.output_apk }}
+            ${{ steps.merge_bundle.outputs.output_apk }}.sha256
+            metadata.json
+          if-no-files-found: warn
+
+      - name: Publish Official GitHub Release
+        if: steps.release_gate.outputs.skip_release != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.release_gate.outputs.version }}"
+          TAG_NAME="v${VERSION}"
+          RELEASE_TITLE="Instagram Alpha v${VERSION} (arm64-v8a)"
+          OUTPUT_APK="${{ steps.merge_bundle.outputs.output_apk }}"
+          SHA_VAL=$(cat "${OUTPUT_APK}.sha256" | awk '{print $1}')
+
+          NOTES="### Instagram Alpha Release v${VERSION}
+          - **Architecture:** \`arm64-v8a\`
+          - **Release Channel:** Official Instagram Alpha
+          - **Source:** APKMirror Verified Ingest
+          - **Format:** Standalone Merged APK (Ready for Modding / Patching)
+          - **SHA-256 Checksum:** \`${SHA_VAL}\`
+          
+          ---
+          #### Downstream Integration
+          This release is automatically consumed by [junksidetm/instafel](https://github.com/junksidetm/instafel) for injecting custom typography and emoji engines."
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists. Uploading/updating release assets..."
+            gh release upload "$TAG_NAME" "$OUTPUT_APK" "${OUTPUT_APK}.sha256" metadata.json --clobber
+          else
+            echo "Creating new release $TAG_NAME..."
+            gh release create "$TAG_NAME" \
+              "$OUTPUT_APK" \
+              "${OUTPUT_APK}.sha256" \
+              metadata.json \
+              --title "$RELEASE_TITLE" \
+              --notes "$NOTES"
+          fi
