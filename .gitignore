@@ -1,0 +1,9 @@
+node_modules/
+downloads/
+*.apk
+*.apkm
+*.xapk
+*.zip
+*.jar
+.DS_Store
+Thumbs.db
