@@ -43,3 +43,11 @@ This file is the permanent, immutable ledger of the `Alpha-Insta` project evolut
   - `scripts/download-instagram-alpha.mjs`: Added resilient RSS feed extraction for Alpha builds, fallback HTTP header handling on 403 challenges, and graceful process lifecycle termination.
   - `Version.md`: Appended tracking entry.
 - **Status**: 100% (Completed & Synced)
+
+## [2026-10-12 15:11:00 IST] - Upstream Turnstile Challenge Graceful Handling
+- **Action**: Hardened autonomous crawler and GitHub Actions pipeline to handle upstream Cloudflare Turnstile challenges gracefully, guarding split unpack and merge stages against empty payload downloads.
+- **Components Modified**:
+  - `scripts/download-instagram-alpha.mjs`: Added graceful catch and output reporting on upstream 403 challenge.
+  - `.github/workflows/fetch-and-release-alpha.yml`: Added guard conditions verifying downloaded file presence prior to execution of bundle merge, artifact upload, and release publication.
+  - `Version.md`: Appended tracking entry.
+- **Status**: 100% (Completed & Synced)

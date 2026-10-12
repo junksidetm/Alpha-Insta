@@ -77,7 +77,7 @@ jobs:
           node scripts/download-instagram-alpha.mjs
 
       - name: Unpack Bundle & Merge Splits into Standalone APK
-        if: steps.release_gate.outputs.skip_release != 'true'
+        if: steps.release_gate.outputs.skip_release != 'true' && steps.download_apkm.outputs.file_path != ''
         id: merge_bundle
         run: |
           VERSION="${{ steps.release_gate.outputs.version }}"
@@ -138,7 +138,7 @@ jobs:
           ls -lh "$OUTPUT_APK" metadata.json
 
       - name: Upload Clean Standalone APK Artifact
-        if: steps.release_gate.outputs.skip_release != 'true'
+        if: steps.release_gate.outputs.skip_release != 'true' && steps.download_apkm.outputs.file_path != ''
         uses: actions/upload-artifact@v4
         with:
           name: instagram-alpha-${{ steps.release_gate.outputs.version }}-arm64-v8a
@@ -149,7 +149,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Publish Official GitHub Release
-        if: steps.release_gate.outputs.skip_release != 'true'
+        if: steps.release_gate.outputs.skip_release != 'true' && steps.download_apkm.outputs.file_path != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

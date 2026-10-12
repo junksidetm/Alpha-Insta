@@ -320,8 +320,13 @@ async function main() {
 
     writeGithubOutput('file_path', destPath);
     console.log(`\n[Success] Instagram Alpha v${release.version} is ready at ${destPath}!`);
-    return;
   } catch (err) {
+    if (err.message && err.message.includes('HTTP 403')) {
+      console.warn(`\n[Notice] APKMirror upstream returned HTTP 403 (Cloudflare Turnstile challenge active).`);
+      console.warn(`[Notice] Skipping download gracefully until upstream challenge resolves.`);
+      writeGithubOutput('skipped', 'true');
+      return;
+    }
     console.error(`\n[Error] Alpha Crawler failed: ${err.message}`);
     process.exit(1);
   }
