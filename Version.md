@@ -36,3 +36,10 @@ This file is the permanent, immutable ledger of the `Alpha-Insta` project evolut
   - `README.md`
   - `Version.md`
 - **Status**: 100% (Completed & Synced)
+
+## [2026-10-12 14:55:00 IST] - Cloudflare-Resilient RSS Ingestion Pipeline
+- **Action**: Resolved APKMirror HTTP 403 bot-challenge failure by transitioning release discovery to the APKMirror RSS feed endpoint (`/feed/`) with fallback browser headers.
+- **Components Modified**:
+  - `scripts/download-instagram-alpha.mjs`: Added resilient RSS feed extraction for Alpha builds, fallback HTTP header handling on 403 challenges, and graceful process lifecycle termination.
+  - `Version.md`: Appended tracking entry.
+- **Status**: 100% (Completed & Synced)

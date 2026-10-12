@@ -15,9 +15,21 @@ const REPO_SLUG = 'instagram-instagram';
 
 const fetchHeaders = async (url, args = {}) => {
   args.headers = args.headers || {};
-  args.headers['user-agent'] = 'APKUpdater-v0';
-  args.headers['authorization'] = 'Basic YXBpLWFwa3VwZGF0ZXI6cm01cmNmcnVVakt5MDRzTXB5TVBKWFc4';
+  args.headers['user-agent'] = args.headers['user-agent'] || 'APKUpdater-v0';
+  args.headers['authorization'] = args.headers['authorization'] || 'Basic YXBpLWFwa3VwZGF0ZXI6cm01cmNmcnVVakt5MDRzTXB5TVBKWFc4';
   return fetch(url, args);
+};
+
+const fetchWithFallback = async (url, args = {}) => {
+  let res = await fetchHeaders(url, args);
+  if (res.status === 403) {
+    console.warn(`[Crawler] HTTP 403 on ${url} with APKUpdater headers, retrying with standard browser headers...`);
+    const browserArgs = { ...args, headers: { ...(args.headers || {}) } };
+    browserArgs.headers['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36';
+    delete browserArgs.headers['authorization'];
+    res = await fetch(url, browserArgs);
+  }
+  return res;
 };
 
 const writeGithubOutput = (key, value) => {
@@ -28,8 +40,81 @@ const writeGithubOutput = (key, value) => {
 };
 
 async function getLatestAlphaRelease(targetVersion) {
+  // Step 1: Attempt RSS feed discovery (resilient against Cloudflare bot challenge)
+  console.log(`[Crawler] Fetching releases list from ${BASE_URL}/apk/${ORG_SLUG}/${REPO_SLUG}/feed/...`);
+  try {
+    const res = await fetchHeaders(`${BASE_URL}/apk/${ORG_SLUG}/${REPO_SLUG}/feed/`);
+    if (res.ok) {
+      const xml = await res.text();
+      const itemRegex = /<item>([\s\S]*?)<\/item>/g;
+      const items = [...xml.matchAll(itemRegex)];
+      const releases = [];
+      for (const item of items) {
+        const content = item[1];
+        const titleMatch = content.match(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/);
+        const linkMatch = content.match(/<link>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/link>/);
+        if (!titleMatch || !linkMatch) continue;
+        const title = titleMatch[1];
+        const link = linkMatch[1];
+        const isAlpha = /alpha/i.test(title);
+        const versionMatch = title.match(/Instagram\s+([0-9]+(?:\.[0-9]+)+)\s*(?:alpha|beta)?/i);
+        if (versionMatch) {
+          releases.push({
+            version: versionMatch[1],
+            isAlpha,
+            link: link.trim()
+          });
+        }
+      }
+      if (releases.length > 0) {
+        console.log(`[Crawler] Found ${releases.length} recent releases in RSS feed:`);
+        for (const r of releases.slice(0, 5)) {
+          console.log(`  - v${r.version} [Alpha: ${r.isAlpha}] (${r.link})`);
+        }
+
+        if (targetVersion) {
+          const found = releases.find(r => r.version === targetVersion);
+          if (found) {
+            console.log(`[Crawler] Matched requested target version: v${found.version}`);
+            return found;
+          }
+          console.log(`[Crawler] Target version v${targetVersion} not in recent list, constructing direct link...`);
+          const rawSlug = targetVersion.replaceAll('.', '-');
+          return {
+            version: targetVersion,
+            link: `${BASE_URL}/apk/${ORG_SLUG}/${REPO_SLUG}/instagram-${rawSlug}-release/`
+          };
+        }
+
+        // Filter for Alpha releases, fallback to all if none flagged
+        const alphaReleases = releases.filter(r => r.isAlpha);
+        const candidates = alphaReleases.length > 0 ? alphaReleases : releases;
+
+        candidates.sort((a, b) => {
+          const pa = a.version.split('.').map(Number);
+          const pb = b.version.split('.').map(Number);
+          for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+            const na = pa[i] || 0;
+            const nb = pb[i] || 0;
+            if (na !== nb) return nb - na;
+          }
+          return 0;
+        });
+
+        const latestAlpha = candidates[0];
+        console.log(`[Crawler] Selected latest Alpha build: v${latestAlpha.version}`);
+        return latestAlpha;
+      }
+    } else {
+      console.warn(`[Crawler] RSS feed returned HTTP ${res.status}, falling back to HTML scraping...`);
+    }
+  } catch (feedErr) {
+    console.warn(`[Crawler] RSS feed check failed (${feedErr.message}), falling back to HTML scraping...`);
+  }
+
+  // Step 2: Fallback to HTML scraping
   console.log(`[Crawler] Fetching releases list from ${BASE_URL}/apk/${ORG_SLUG}/${REPO_SLUG}/...`);
-  const res = await fetchHeaders(`${BASE_URL}/apk/${ORG_SLUG}/${REPO_SLUG}/`);
+  const res = await fetchWithFallback(`${BASE_URL}/apk/${ORG_SLUG}/${REPO_SLUG}/`);
   if (!res.ok) {
     throw new Error(`Failed to fetch releases list: HTTP ${res.status}`);
   }
@@ -98,7 +183,7 @@ async function getLatestAlphaRelease(targetVersion) {
 
 async function getArm64Variant(release) {
   console.log(`[Crawler] Fetching variants table for v${release.version}...`);
-  const res = await fetchHeaders(release.link);
+  const res = await fetchWithFallback(release.link);
   if (!res.ok) {
     throw new Error(`Failed to fetch variants page: HTTP ${res.status}`);
   }
@@ -131,7 +216,7 @@ async function getArm64Variant(release) {
 
 async function resolveDirectDownloadUrl(variantUrl) {
   console.log(`[Crawler] Step 1: Navigating to variant page...`);
-  const r1 = await fetchHeaders(variantUrl);
+  const r1 = await fetchWithFallback(variantUrl);
   if (!r1.ok) {
     throw new Error(`Failed to open variant page: HTTP ${r1.status}`);
   }
@@ -145,7 +230,7 @@ async function resolveDirectDownloadUrl(variantUrl) {
   const downloadPageUrl = `${BASE_URL}${downloadPageMatch[1]}`;
   console.log(`[Crawler] Step 2: Navigating to download staging page (${downloadPageUrl})...`);
 
-  const r2 = await fetchHeaders(downloadPageUrl, {
+  const r2 = await fetchWithFallback(downloadPageUrl, {
     headers: { referer: variantUrl }
   });
   if (!r2.ok) {
@@ -165,7 +250,7 @@ async function resolveDirectDownloadUrl(variantUrl) {
 
 async function downloadFile(url, referer, destPath) {
   console.log(`[Downloader] Starting download to ${destPath}...`);
-  const res = await fetchHeaders(url, {
+  const res = await fetchWithFallback(url, {
     headers: { referer }
   });
 
@@ -220,7 +305,7 @@ async function main() {
     // If CHECK_ONLY is true, exit early before downloading
     if (process.env.CHECK_ONLY === 'true') {
       console.log(`[Crawler] CHECK_ONLY enabled. Discovered v${release.version}.`);
-      process.exit(0);
+      return;
     }
 
     // Step 2: Get target arm64-v8a variant
@@ -235,7 +320,7 @@ async function main() {
 
     writeGithubOutput('file_path', destPath);
     console.log(`\n[Success] Instagram Alpha v${release.version} is ready at ${destPath}!`);
-    process.exit(0);
+    return;
   } catch (err) {
     console.error(`\n[Error] Alpha Crawler failed: ${err.message}`);
     process.exit(1);
