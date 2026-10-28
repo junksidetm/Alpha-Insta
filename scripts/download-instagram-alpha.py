@@ -3,8 +3,10 @@
 Alpha-Insta Autonomous Alpha Crawler & Downloader
 
 Discovers, resolves, and streams the latest Instagram Alpha (arm64-v8a)
-package from APKMirror into the CI workspace with multi-layer Cloudflare
-bypass (TLS impersonation + SeleniumBase UC Mode fallback).
+package from APKMirror into the CI workspace with triple-layer fallback:
+1. Direct TLS/JA3 impersonation with curl_cffi
+2. SeleniumBase UC Mode with PyAutoGUI and Xvfb virtual display
+3. Multi-source justapk fallback engine
 """
 
 import os
@@ -215,7 +217,7 @@ def download_via_curl_cffi(release: dict, dest_path: Path) -> bool:
 
 
 def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
-    print("\n[Strategy 2] Attempting download via SeleniumBase UC Mode (Virtual Framebuffer)...")
+    print("\n[Strategy 2] Attempting download via SeleniumBase UC Mode with PyAutoGUI & Xvfb...")
     try:
         from seleniumbase import SB
     except ImportError:
@@ -226,33 +228,36 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
     print(f"[Strategy 2] Target download directory: {dest_dir_abs}")
 
     with SB(uc=True, test=True, xvfb=True, locale="en") as sb:
-        # Step 1: Release page
-        print(f"[Strategy 2] Navigating to {release_url} in CDP mode...")
-        sb.activate_cdp_mode(release_url)
-        sb.sleep(2)
+        print(f"[Strategy 2] Navigating to {release_url} with UC anti-bot bypass...")
+        sb.uc_open_with_reconnect(release_url, reconnect_time=6)
 
         title = sb.get_title()
-        print(f"[Strategy 2] Page title after CDP load: '{title}'")
+        print(f"[Strategy 2] Initial page title: '{title}'")
 
         if "Just a moment" in title or sb.is_element_visible('iframe[src*="challenges.cloudflare.com"]'):
-            print("[Strategy 2] Cloudflare Turnstile detected, solving via CDP solve_captcha()...")
+            print("[Strategy 2] Cloudflare Turnstile detected. Engaging PyAutoGUI captcha click...")
             try:
-                sb.solve_captcha()
+                sb.uc_gui_click_captcha()
             except Exception as e:
-                print(f"[Strategy 2] solve_captcha exception: {e}")
-            sb.sleep(5)
-            title = sb.get_title()
-            print(f"[Strategy 2] Page title after solve_captcha: '{title}'")
+                print(f"[Strategy 2] uc_gui_click_captcha: {e}")
+                try:
+                    sb.solve_captcha()
+                except Exception as e2:
+                    print(f"[Strategy 2] solve_captcha: {e2}")
+
+            # Poll up to 20 seconds for challenge resolution
+            for i in range(10):
+                sb.sleep(2)
+                title = sb.get_title()
+                print(f"[Strategy 2] Polling title ({i+1}/10): '{title}'")
+                if "Just a moment" not in title and "Cloudflare" not in title:
+                    break
 
         html = sb.get_page_source()
         print(f"[Strategy 2] HTML length: {len(html)}")
 
-        # Search for all links with apk-download
         all_apk_links = re.findall(r'href="([^"]*apk-download[^"]*)"', html, re.IGNORECASE)
-        print(f"[Strategy 2] Discovered {len(all_apk_links)} raw apk-download links in page.")
-        if all_apk_links:
-            for l in all_apk_links[:5]:
-                print(f"  - candidate: {l}")
+        print(f"[Strategy 2] Discovered {len(all_apk_links)} raw apk-download links.")
 
         variant_matches = [
             l for l in all_apk_links
@@ -268,10 +273,13 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
         )
         variant_url = target_variant if target_variant.startswith("http") else f"{BASE_URL}{target_variant}"
         print(f"[Strategy 2] Opening variant page: {variant_url}...")
-        sb.activate_cdp_mode(variant_url)
-        sb.sleep(2)
+        sb.uc_open_with_reconnect(variant_url, reconnect_time=4)
+
         if "Just a moment" in sb.get_title():
-            sb.solve_captcha()
+            try:
+                sb.uc_gui_click_captcha()
+            except Exception:
+                pass
             sb.sleep(4)
 
         html_var = sb.get_page_source()
@@ -286,10 +294,13 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
         staging_href = dl_match.group(1)
         staging_url = staging_href if staging_href.startswith("http") else f"{BASE_URL}{staging_href}"
         print(f"[Strategy 2] Opening staging page: {staging_url}...")
-        sb.activate_cdp_mode(staging_url)
-        sb.sleep(2)
+        sb.uc_open_with_reconnect(staging_url, reconnect_time=4)
+
         if "Just a moment" in sb.get_title():
-            sb.solve_captcha()
+            try:
+                sb.uc_gui_click_captcha()
+            except Exception:
+                pass
             sb.sleep(4)
 
         html_stage = sb.get_page_source()
@@ -305,25 +316,19 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
         final_url = final_href if final_href.startswith("http") else f"{BASE_URL}{final_href}"
         print(f"[Strategy 2] Resolved final download URL: {final_url}")
 
-        # Extract cleared session cookies and user-agent from Chrome
         cookies = {c["name"]: c["value"] for c in sb.get_cookies()}
         ua = sb.get_user_agent()
-        print(f"[Strategy 2] Extracted {len(cookies)} browser cookies (including cf_clearance: {'cf_clearance' in cookies}).")
+        print(f"[Strategy 2] Extracted {len(cookies)} browser cookies.")
 
-        # Stream download using curl_cffi with authenticated browser session
         from curl_cffi import requests
         dl_session = requests.Session(impersonate="chrome131")
         dest_file = dest_dir / "instagram_bundle.apkm"
-        print(f"[Strategy 2] Streaming payload to {dest_file} with browser clearance session...")
+        print(f"[Strategy 2] Streaming payload to {dest_file} with cookies...")
 
         res_dl = dl_session.get(
             final_url,
             cookies=cookies,
-            headers={
-                "User-Agent": ua,
-                "Referer": staging_url,
-                "Accept": "*/*",
-            },
+            headers={"User-Agent": ua, "Referer": staging_url, "Accept": "*/*"},
             stream=True,
             timeout=120,
         )
@@ -344,9 +349,8 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
             if size_mb >= 30.0:
                 return dest_file
 
-        # Fallback to in-browser download
-        print("[Strategy 2] Direct stream returned non-200, navigating browser to trigger file download...")
-        sb.activate_cdp_mode(final_url)
+        print("[Strategy 2] Direct stream failed, using browser download...")
+        sb.uc_open_with_reconnect(final_url, reconnect_time=5)
         for _ in range(30):
             time.sleep(2)
             candidates = list(Path.home().glob("Downloads/*.apk*")) + list(dest_dir.glob("*.apk*"))
@@ -357,8 +361,47 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
                 if target_file != dest_file:
                     import shutil
                     shutil.move(str(target_file), str(dest_file))
-                print(f"[Strategy 2] In-browser download confirmed: {dest_file} ({dest_file.stat().st_size / (1024*1024):.2f} MB)")
+                print(f"[Strategy 2] Download confirmed: {dest_file}")
                 return dest_file
+
+    return None
+
+
+def download_via_justapk(version: str, dest_dir: Path) -> Path | None:
+    print("\n[Strategy 3] Attempting download via justapk multi-source engine...")
+    import shutil
+    import subprocess
+
+    justapk_bin = shutil.which("justapk") or sys.executable
+    base_cmd = [justapk_bin] if justapk_bin != sys.executable else [sys.executable, "-m", "justapk"]
+
+    # Try 1: with explicit version across all sources
+    cmd1 = base_cmd + ["download", "com.instagram.android", "-v", version, "-o", str(dest_dir)]
+    print(f"[Strategy 3] Running: {' '.join(cmd1)}")
+    res1 = subprocess.run(cmd1, capture_output=True, text=True)
+    print(f"[Strategy 3 v{version}] Output:\n{res1.stdout}")
+    if res1.stderr:
+        print(f"[Strategy 3 v{version}] Stderr:\n{res1.stderr}")
+
+    candidates = list(dest_dir.glob("*.apk*")) + list(dest_dir.glob("*.xapk")) + list(dest_dir.glob("*.apks"))
+    valid = [f for f in candidates if not f.name.endswith(".crdownload") and f.stat().st_size > (30 * 1024 * 1024)]
+    if valid:
+        print(f"[Strategy 3] Success! Downloaded: {valid[0]} ({valid[0].stat().st_size / (1024*1024):.2f} MB)")
+        return valid[0]
+
+    # Try 2: latest available across all sources
+    cmd2 = base_cmd + ["download", "com.instagram.android", "-o", str(dest_dir)]
+    print(f"[Strategy 3] Running fallback to latest: {' '.join(cmd2)}")
+    res2 = subprocess.run(cmd2, capture_output=True, text=True)
+    print(f"[Strategy 3 latest] Output:\n{res2.stdout}")
+    if res2.stderr:
+        print(f"[Strategy 3 latest] Stderr:\n{res2.stderr}")
+
+    candidates = list(dest_dir.glob("*.apk*")) + list(dest_dir.glob("*.xapk")) + list(dest_dir.glob("*.apks"))
+    valid = [f for f in candidates if not f.name.endswith(".crdownload") and f.stat().st_size > (30 * 1024 * 1024)]
+    if valid:
+        print(f"[Strategy 3] Success! Downloaded latest: {valid[0]} ({valid[0].stat().st_size / (1024*1024):.2f} MB)")
+        return valid[0]
 
     return None
 
@@ -381,15 +424,23 @@ def main():
 
     dest_file = target_dir / f"instagram-v{version}-bundle.apkm"
 
-    # Step 2: Try Strategy 1 (curl_cffi with APKUpdater Auth)
+    # Step 2: Strategy 1 (curl_cffi)
     success = download_via_curl_cffi(release, dest_file)
 
-    # Step 3: Try Strategy 2 (SeleniumBase UC Mode) if Strategy 1 fails
+    # Step 3: Strategy 2 (SeleniumBase UC + PyAutoGUI)
     if not success:
         print("[Crawler] Strategy 1 failed, engaging Strategy 2 (SeleniumBase UC Mode)...")
         sb_file = download_via_seleniumbase(release["link"], target_dir)
         if sb_file and sb_file.exists() and sb_file.stat().st_size >= (30 * 1024 * 1024):
             dest_file = sb_file
+            success = True
+
+    # Step 4: Strategy 3 (justapk multi-source)
+    if not success:
+        print("[Crawler] Strategy 2 failed, engaging Strategy 3 (justapk multi-source)...")
+        ja_file = download_via_justapk(version, target_dir)
+        if ja_file and ja_file.exists() and ja_file.stat().st_size >= (30 * 1024 * 1024):
+            dest_file = ja_file
             success = True
 
     if not success or not dest_file.exists() or dest_file.stat().st_size < (30 * 1024 * 1024):
