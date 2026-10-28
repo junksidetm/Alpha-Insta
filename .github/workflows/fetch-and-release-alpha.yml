@@ -26,10 +26,15 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: 22
+          python-version: '3.11'
+
+      - name: Install Ingestion Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install curl_cffi justapk
 
       - name: Setup Java 21 & Build Tools
         uses: actions/setup-java@v4
@@ -44,7 +49,7 @@ jobs:
           CHECK_ONLY: 'true'
         run: |
           echo "Checking APKMirror for newest Instagram Alpha release..."
-          node scripts/download-instagram-alpha.mjs
+          python scripts/download-instagram-alpha.py
 
       - name: Release Gate (Check Existing Release)
         id: release_gate
@@ -74,7 +79,7 @@ jobs:
           DOWNLOAD_DIR: 'downloads'
         run: |
           echo "Streaming Instagram Alpha APKM from APKMirror..."
-          node scripts/download-instagram-alpha.mjs
+          python scripts/download-instagram-alpha.py
 
       - name: Unpack Bundle & Merge Splits into Standalone APK
         if: steps.release_gate.outputs.skip_release != 'true' && steps.download_apkm.outputs.file_path != ''
@@ -155,7 +160,7 @@ jobs:
         run: |
           VERSION="${{ steps.release_gate.outputs.version }}"
           TAG_NAME="v${VERSION}"
-          RELEASE_TITLE="Instagram Alpha v${VERSION} (arm64-v8a)"
+          RELEASE_TITLE="v${VERSION}"
           OUTPUT_APK="${{ steps.merge_bundle.outputs.output_apk }}"
           SHA_VAL=$(cat "${OUTPUT_APK}.sha256" | awk '{print $1}')
 
@@ -182,3 +187,16 @@ jobs:
               --title "$RELEASE_TITLE" \
               --notes "$NOTES"
           fi
+
+      - name: Trigger Downstream Instafel Modding Pipeline
+        if: steps.release_gate.outputs.skip_release != 'true' && steps.download_apkm.outputs.file_path != ''
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.release_gate.outputs.version }}"
+          echo "Dispatching downstream build trigger to junksidetm/instafel for version ${VERSION}..."
+          gh workflow run generate_instafel.yml \
+            --repo junksidetm/instafel \
+            --ref main \
+            -f target_version="${VERSION}" || \
+          echo "Workflow dispatch trigger failed (check permissions); fallback cron in instafel will pick up the release within 6 hours."

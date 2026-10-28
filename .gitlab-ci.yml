@@ -6,8 +6,10 @@ stages:
 lint-scripts:
   stage: test
   script:
-    - echo "Validating JavaScript crawler syntax..."
+    - echo "Validating crawler scripts..."
     - node --check scripts/download-instagram-alpha.mjs
+    - apk add --no-cache python3
+    - python3 -m py_compile scripts/download-instagram-alpha.py
     - echo "Syntax validation passed!"
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
