@@ -230,16 +230,33 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
         print(f"[Strategy 2] Navigating to {release_url} with UC anti-bot bypass...")
         sb.uc_open_with_reconnect(release_url, reconnect_time=6)
 
-        if sb.is_element_visible('iframe[src*="challenges.cloudflare.com"]'):
-            print("[Strategy 2] Cloudflare challenge detected, clicking...")
-            sb.uc_gui_click_captcha()
-            sb.sleep(4)
+        title = sb.get_title()
+        print(f"[Strategy 2] Page title after load: '{title}'")
+
+        if "Just a moment" in title or sb.is_element_visible('iframe[src*="challenges.cloudflare.com"]'):
+            print("[Strategy 2] Cloudflare challenge active, solving...")
+            try:
+                sb.uc_gui_click_captcha()
+            except Exception as e:
+                print(f"[Strategy 2] Captcha click: {e}")
+            sb.sleep(6)
+            title = sb.get_title()
+            print(f"[Strategy 2] Page title after challenge wait: '{title}'")
 
         html = sb.get_page_source()
-        variant_matches = re.findall(
-            r'href="(/apk/instagram/instagram-instagram/[^"]+android-apk-download/)"',
-            html,
-        )
+        print(f"[Strategy 2] HTML length: {len(html)}")
+
+        # Search for all links with apk-download
+        all_apk_links = re.findall(r'href="([^"]*apk-download[^"]*)"', html, re.IGNORECASE)
+        print(f"[Strategy 2] Discovered {len(all_apk_links)} raw apk-download links in page.")
+        if all_apk_links:
+            for l in all_apk_links[:5]:
+                print(f"  - candidate: {l}")
+
+        variant_matches = [
+            l for l in all_apk_links
+            if "android-apk-download" in l and "instagram" in l.lower()
+        ]
         if not variant_matches:
             print("[Strategy 2] No variant links found in HTML.")
             return None
@@ -248,20 +265,21 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
             (v for v in set(variant_matches) if "-2-android-apk-download" in v),
             variant_matches[0],
         )
-        variant_url = f"{BASE_URL}{target_variant}"
+        variant_url = target_variant if target_variant.startswith("http") else f"{BASE_URL}{target_variant}"
         print(f"[Strategy 2] Opening variant page: {variant_url}...")
         sb.uc_open_with_reconnect(variant_url, reconnect_time=4)
 
         html_var = sb.get_page_source()
         dl_match = re.search(
-            r'href="(/apk/[^"]+android-apk-download/download/[^"]*)"',
+            r'href="([^"]*apk/[^"]*android-apk-download/download/[^"]*)"',
             html_var,
         )
         if not dl_match:
             print("[Strategy 2] Intermediate download link not found.")
             return None
 
-        staging_url = f"{BASE_URL}{dl_match.group(1)}"
+        staging_href = dl_match.group(1)
+        staging_url = staging_href if staging_href.startswith("http") else f"{BASE_URL}{staging_href}"
         print(f"[Strategy 2] Opening staging page: {staging_url}...")
         sb.uc_open_with_reconnect(staging_url, reconnect_time=4)
 
@@ -274,7 +292,8 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
             print("[Strategy 2] download.php link not found on staging page.")
             return None
 
-        final_url = f"{BASE_URL}{final_match.group(1)}"
+        final_href = final_match.group(1)
+        final_url = final_href if final_href.startswith("http") else f"{BASE_URL}{final_href}"
         print(f"[Strategy 2] Resolved final download URL: {final_url}")
 
         # Trigger download by clicking download button or navigating
