@@ -87,3 +87,13 @@ This file is the permanent, immutable ledger of the `Alpha-Insta` project evolut
   - `.gitlab-ci.yml`: Added Python syntax validation to test suite.
   - `Version.md`: Appended tracking entry.
 - **Status**: 100% (Completed & Synced)
+
+## [2026-10-28 10:25:00 IST] - Successful Autonomous Ingestion Verification & Browser Header Optimization
+- **Action**: Verified successful end-to-end execution of GitHub Actions CI run `40632826114` releasing official Instagram Alpha standalone bundle `v454.0.0.0.55`, and optimized crawler HTTP request headers to prevent WAF 403 blocks during TLS-impersonated downloads.
+- **Verification Results**:
+  - Run ID: `40632826114` completed successfully in 8m.
+  - Upstream release `v454.0.0.0.55` discovered, downloaded, decompiled, verified, and published to GitHub Releases with strict semantic title format `v454.0.0.0.55`.
+- **Components Modified**:
+  - `scripts/download-instagram-alpha.py`: Decoupled `AUTH_HEADERS` (used exclusively for APKUpdater feed retrieval) from web document requests by introducing `BROWSER_HEADERS` for HTML variants, staging, and CDN downloads; streamlined SeleniumBase UC session configuration.
+  - `Version.md`: Appended tracking entry.
+- **Status**: 100% (Completed & Verified in Production CI)

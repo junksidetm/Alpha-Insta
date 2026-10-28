@@ -28,6 +28,19 @@ AUTH_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+BROWSER_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
 
 def write_github_output(key: str, value: str):
     output_file = os.environ.get("GITHUB_OUTPUT")
@@ -125,7 +138,7 @@ def download_via_curl_cffi(release: dict, dest_path: Path) -> bool:
 
     # Step 1: Variants Page
     print(f"[Strategy 1] Fetching variant table from {release['link']}...")
-    res = session.get(release["link"], headers=AUTH_HEADERS, timeout=30)
+    res = session.get(release["link"], headers=BROWSER_HEADERS, timeout=30)
     if res.status_code != 200:
         print(f"[Strategy 1] Variant page returned HTTP {res.status_code}")
         return False
@@ -149,7 +162,7 @@ def download_via_curl_cffi(release: dict, dest_path: Path) -> bool:
     print(f"[Strategy 1] Selected target variant: {target_variant}")
 
     # Step 2: Intermediate download button page
-    headers_var = dict(AUTH_HEADERS)
+    headers_var = dict(BROWSER_HEADERS)
     headers_var["Referer"] = release["link"]
     res_var = session.get(target_variant, headers=headers_var, timeout=30)
     if res_var.status_code != 200:
@@ -168,7 +181,7 @@ def download_via_curl_cffi(release: dict, dest_path: Path) -> bool:
     print(f"[Strategy 1] Navigating to staging page: {staging_url}...")
 
     # Step 3: Staging download page
-    headers_stage = dict(AUTH_HEADERS)
+    headers_stage = dict(BROWSER_HEADERS)
     headers_stage["Referer"] = target_variant
     res_stage = session.get(staging_url, headers=headers_stage, timeout=30)
     if res_stage.status_code != 200:
@@ -187,7 +200,7 @@ def download_via_curl_cffi(release: dict, dest_path: Path) -> bool:
     print(f"[Strategy 1] Resolved final direct download URL: {final_url}")
 
     # Step 4: Stream download
-    headers_dl = dict(AUTH_HEADERS)
+    headers_dl = dict(BROWSER_HEADERS)
     headers_dl["Referer"] = staging_url
     print(f"[Strategy 1] Streaming payload to {dest_path}...")
     res_dl = session.get(final_url, headers=headers_dl, stream=True, timeout=120)
@@ -227,7 +240,7 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
     dest_dir_abs = dest_dir.resolve()
     print(f"[Strategy 2] Target download directory: {dest_dir_abs}")
 
-    with SB(uc=True, test=True, xvfb=True, locale="en") as sb:
+    with SB(uc=True, xvfb=True, locale="en") as sb:
         print(f"[Strategy 2] Navigating to {release_url} with UC anti-bot bypass...")
         sb.uc_open_with_reconnect(release_url, reconnect_time=6)
 
