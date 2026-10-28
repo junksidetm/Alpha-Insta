@@ -2,14 +2,15 @@
 """
 Alpha-Insta Autonomous Alpha Crawler & Downloader
 
-Automatically discovers, resolves, and streams the latest Instagram Alpha
-(arm64-v8a) package from APKMirror into the CI workspace with multi-strategy
-Cloudflare bypass using curl_cffi and justapk fallback.
+Discovers, resolves, and streams the latest Instagram Alpha (arm64-v8a)
+package from APKMirror into the CI workspace with multi-layer Cloudflare
+bypass (TLS impersonation + SeleniumBase UC Mode fallback).
 """
 
 import os
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -17,6 +18,13 @@ BASE_URL = "https://www.apkmirror.com"
 ORG_SLUG = "instagram"
 REPO_SLUG = "instagram-instagram"
 FEED_URL = f"{BASE_URL}/apk/{ORG_SLUG}/{REPO_SLUG}/feed/"
+
+AUTH_HEADERS = {
+    "User-Agent": "APKUpdater-v0",
+    "Authorization": "Basic YXBpLWFwa3VwZGF0ZXI6cm01cmNmcnVVakt5MDRzTXB5TVBKWFc4",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 def write_github_output(key: str, value: str):
@@ -33,38 +41,23 @@ def parse_semver(version_str: str):
 def get_latest_alpha_release(target_version: str = ""):
     print(f"[Crawler] Fetching releases feed from {FEED_URL}...")
     xml_content = ""
+
     try:
         from curl_cffi import requests
+
         session = requests.Session(impersonate="chrome131")
-        resp = session.get(FEED_URL, timeout=30)
+        resp = session.get(FEED_URL, headers=AUTH_HEADERS, timeout=30)
         if resp.status_code == 200:
             xml_content = resp.text
         else:
-            print(f"[Crawler] Standard feed fetch returned HTTP {resp.status_code}, retrying with APKUpdater auth...")
-            resp = session.get(
-                FEED_URL,
-                headers={
-                    "User-Agent": "APKUpdater-v0",
-                    "Authorization": "Basic YXBpLWFwa3VwZGF0ZXI6cm01cmNmcnVVakt5MDRzTXB5TVBKWFc4",
-                },
-                timeout=30,
-            )
-            if resp.status_code == 200:
-                xml_content = resp.text
-            else:
-                print(f"[Crawler] Auth feed fetch returned HTTP {resp.status_code}")
+            print(f"[Crawler] Feed fetch returned HTTP {resp.status_code}")
     except Exception as e:
-        print(f"[Crawler] curl_cffi feed fetch failed: {e}, falling back to urllib...")
+        print(f"[Crawler] curl_cffi feed fetch failed ({e}), falling back to urllib...")
 
     if not xml_content:
         import urllib.request
-        req = urllib.request.Request(
-            FEED_URL,
-            headers={
-                "User-Agent": "APKUpdater-v0",
-                "Authorization": "Basic YXBpLWFwa3VwZGF0ZXI6cm01cmNmcnVVakt5MDRzTXB5TVBKWFc4",
-            },
-        )
+
+        req = urllib.request.Request(FEED_URL, headers=AUTH_HEADERS)
         with urllib.request.urlopen(req, timeout=30) as resp:
             xml_content = resp.read().decode("utf-8")
 
@@ -101,7 +94,7 @@ def get_latest_alpha_release(target_version: str = ""):
         if matched:
             print(f"[Crawler] Matched requested target version: v{matched['version']}")
             return matched
-        print(f"[Crawler] Target v{target_version} not in feed, constructing direct canonical link...")
+        print(f"[Crawler] Target v{target_version} not in feed, constructing canonical link...")
         slug = target_version.replace(".", "-")
         return {
             "version": target_version,
@@ -127,32 +120,26 @@ def download_via_curl_cffi(release: dict, dest_path: Path) -> bool:
         return False
 
     session = requests.Session(impersonate="chrome131")
-    session.headers.update({
-        "Accept-Language": "en-US,en;q=0.9",
-        "DNT": "1",
-    })
 
     # Step 1: Variants Page
     print(f"[Strategy 1] Fetching variant table from {release['link']}...")
-    res = session.get(release["link"], timeout=30)
+    res = session.get(release["link"], headers=AUTH_HEADERS, timeout=30)
     if res.status_code != 200:
-        print(f"[Strategy 1] Failed variant page: HTTP {res.status_code}")
+        print(f"[Strategy 1] Variant page returned HTTP {res.status_code}")
         return False
 
     html = res.text
-    # Find variant download links
     variant_matches = re.findall(
         r'href="(/apk/instagram/instagram-instagram/[^"]+android-apk-download/)"',
         html,
     )
     if not variant_matches:
-        print("[Strategy 1] No variant download links found in release HTML.")
+        print("[Strategy 1] No variant download links found in HTML.")
         return False
 
     unique_variants = [f"{BASE_URL}{v}" for v in set(variant_matches)]
     print(f"[Strategy 1] Found {len(unique_variants)} variants.")
 
-    # Prioritize variant 2 (arm64-v8a standard) or first variant
     target_variant = next(
         (v for v in unique_variants if "-2-android-apk-download" in v),
         unique_variants[0],
@@ -160,10 +147,11 @@ def download_via_curl_cffi(release: dict, dest_path: Path) -> bool:
     print(f"[Strategy 1] Selected target variant: {target_variant}")
 
     # Step 2: Intermediate download button page
-    session.headers["Referer"] = release["link"]
-    res_var = session.get(target_variant, timeout=30)
+    headers_var = dict(AUTH_HEADERS)
+    headers_var["Referer"] = release["link"]
+    res_var = session.get(target_variant, headers=headers_var, timeout=30)
     if res_var.status_code != 200:
-        print(f"[Strategy 1] Failed on variant detail page: HTTP {res_var.status_code}")
+        print(f"[Strategy 1] Variant detail page returned HTTP {res_var.status_code}")
         return False
 
     dl_page_match = re.search(
@@ -178,10 +166,11 @@ def download_via_curl_cffi(release: dict, dest_path: Path) -> bool:
     print(f"[Strategy 1] Navigating to staging page: {staging_url}...")
 
     # Step 3: Staging download page
-    session.headers["Referer"] = target_variant
-    res_stage = session.get(staging_url, timeout=30)
+    headers_stage = dict(AUTH_HEADERS)
+    headers_stage["Referer"] = target_variant
+    res_stage = session.get(staging_url, headers=headers_stage, timeout=30)
     if res_stage.status_code != 200:
-        print(f"[Strategy 1] Failed on staging page: HTTP {res_stage.status_code}")
+        print(f"[Strategy 1] Staging page returned HTTP {res_stage.status_code}")
         return False
 
     final_match = re.search(
@@ -189,16 +178,17 @@ def download_via_curl_cffi(release: dict, dest_path: Path) -> bool:
         res_stage.text,
     )
     if not final_match:
-        print("[Strategy 1] Final download.php link not found on staging page.")
+        print("[Strategy 1] download.php link not found on staging page.")
         return False
 
     final_url = f"{BASE_URL}{final_match.group(1)}"
     print(f"[Strategy 1] Resolved final direct download URL: {final_url}")
 
     # Step 4: Stream download
-    session.headers["Referer"] = staging_url
+    headers_dl = dict(AUTH_HEADERS)
+    headers_dl["Referer"] = staging_url
     print(f"[Strategy 1] Streaming payload to {dest_path}...")
-    res_dl = session.get(final_url, stream=True, timeout=120)
+    res_dl = session.get(final_url, headers=headers_dl, stream=True, timeout=120)
     if res_dl.status_code != 200:
         print(f"[Strategy 1] Stream request failed: HTTP {res_dl.status_code}")
         return False
@@ -214,41 +204,98 @@ def download_via_curl_cffi(release: dict, dest_path: Path) -> bool:
                     print(f"  - Downloaded {mb:.1f} MB...", flush=True)
 
     file_size_mb = total_bytes / (1024 * 1024)
-    print(f"[Strategy 1] Download completed successfully: {file_size_mb:.2f} MB saved.")
+    print(f"[Strategy 1] Download finished: {file_size_mb:.2f} MB saved.")
 
-    # Guard: APKM / APK bundle for Instagram must be at least 30 MB
     if file_size_mb < 30.0:
-        print(f"[Strategy 1] Warning: Downloaded file size too small ({file_size_mb:.2f} MB). Likely challenge response.")
+        print(f"[Strategy 1] File size too small ({file_size_mb:.2f} MB), likely challenge response.")
         dest_path.unlink(missing_ok=True)
         return False
 
     return True
 
 
-def download_via_justapk(version: str, dest_dir: Path) -> Path | None:
-    print("\n[Strategy 2] Attempting download via justapk fallback engine...")
-    import shutil
-    import subprocess
+def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
+    print("\n[Strategy 2] Attempting download via SeleniumBase UC Mode (Virtual Framebuffer)...")
+    try:
+        from seleniumbase import SB
+    except ImportError:
+        print("[Strategy 2] seleniumbase not installed, skipping...")
+        return None
 
-    justapk_bin = shutil.which("justapk")
-    if not justapk_bin:
-        print("[Strategy 2] justapk binary not in PATH, trying python module invocation...")
-        cmd = [sys.executable, "-m", "justapk", "download", "com.instagram.android", "-v", version, "-s", "apkmirror", "-o", str(dest_dir)]
-    else:
-        cmd = [justapk_bin, "download", "com.instagram.android", "-v", version, "-s", "apkmirror", "-o", str(dest_dir)]
+    dest_dir_abs = dest_dir.resolve()
+    print(f"[Strategy 2] Target download directory: {dest_dir_abs}")
 
-    print(f"[Strategy 2] Running command: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    print(f"[Strategy 2] Output:\n{result.stdout}")
-    if result.stderr:
-        print(f"[Strategy 2] Stderr:\n{result.stderr}")
+    with SB(uc=True, test=True, xvfb=True, locale="en") as sb:
+        # Step 1: Release page
+        print(f"[Strategy 2] Navigating to {release_url} with UC anti-bot bypass...")
+        sb.uc_open_with_reconnect(release_url, reconnect_time=6)
 
-    # Check for downloaded files in dest_dir
-    downloaded = list(dest_dir.glob("*.apk*")) + list(dest_dir.glob("*.xapk"))
-    if downloaded:
-        target = downloaded[0]
-        print(f"[Strategy 2] Success! Downloaded: {target} ({target.stat().st_size / (1024*1024):.2f} MB)")
-        return target
+        if sb.is_element_visible('iframe[src*="challenges.cloudflare.com"]'):
+            print("[Strategy 2] Cloudflare challenge detected, clicking...")
+            sb.uc_gui_click_captcha()
+            sb.sleep(4)
+
+        html = sb.get_page_source()
+        variant_matches = re.findall(
+            r'href="(/apk/instagram/instagram-instagram/[^"]+android-apk-download/)"',
+            html,
+        )
+        if not variant_matches:
+            print("[Strategy 2] No variant links found in HTML.")
+            return None
+
+        target_variant = next(
+            (v for v in set(variant_matches) if "-2-android-apk-download" in v),
+            variant_matches[0],
+        )
+        variant_url = f"{BASE_URL}{target_variant}"
+        print(f"[Strategy 2] Opening variant page: {variant_url}...")
+        sb.uc_open_with_reconnect(variant_url, reconnect_time=4)
+
+        html_var = sb.get_page_source()
+        dl_match = re.search(
+            r'href="(/apk/[^"]+android-apk-download/download/[^"]*)"',
+            html_var,
+        )
+        if not dl_match:
+            print("[Strategy 2] Intermediate download link not found.")
+            return None
+
+        staging_url = f"{BASE_URL}{dl_match.group(1)}"
+        print(f"[Strategy 2] Opening staging page: {staging_url}...")
+        sb.uc_open_with_reconnect(staging_url, reconnect_time=4)
+
+        html_stage = sb.get_page_source()
+        final_match = re.search(
+            r'href="([^"]*wp-content/themes/APKMirror/download\.php[^"]*)"',
+            html_stage,
+        )
+        if not final_match:
+            print("[Strategy 2] download.php link not found on staging page.")
+            return None
+
+        final_url = f"{BASE_URL}{final_match.group(1)}"
+        print(f"[Strategy 2] Resolved final download URL: {final_url}")
+
+        # Trigger download by clicking download button or navigating
+        print("[Strategy 2] Triggering file download in browser session...")
+        sb.uc_open_with_reconnect(final_url, reconnect_time=5)
+
+        # Wait for file to download to default Chrome download directory or dest_dir
+        print("[Strategy 2] Waiting up to 60s for download to complete...")
+        for _ in range(30):
+            time.sleep(2)
+            download_candidates = list(Path.home().glob("Downloads/*.apk*")) + list(dest_dir.glob("*.apk*"))
+            # Filter out temporary .crdownload files
+            completed = [f for f in download_candidates if not f.name.endswith(".crdownload") and f.stat().st_size > (30 * 1024 * 1024)]
+            if completed:
+                target_file = completed[0]
+                dest_file = dest_dir / target_file.name
+                if target_file != dest_file:
+                    import shutil
+                    shutil.move(str(target_file), str(dest_file))
+                print(f"[Strategy 2] Download confirmed: {dest_file} ({dest_file.stat().st_size / (1024*1024):.2f} MB)")
+                return dest_file
 
     return None
 
@@ -271,15 +318,15 @@ def main():
 
     dest_file = target_dir / f"instagram-v{version}-bundle.apkm"
 
-    # Step 2: Try Strategy 1 (curl_cffi)
+    # Step 2: Try Strategy 1 (curl_cffi with APKUpdater Auth)
     success = download_via_curl_cffi(release, dest_file)
 
-    # Step 3: Try Strategy 2 (justapk fallback) if Strategy 1 fails
+    # Step 3: Try Strategy 2 (SeleniumBase UC Mode) if Strategy 1 fails
     if not success:
-        print("[Crawler] Strategy 1 failed, executing Strategy 2 (justapk)...")
-        fallback_file = download_via_justapk(version, target_dir)
-        if fallback_file and fallback_file.exists():
-            dest_file = fallback_file
+        print("[Crawler] Strategy 1 failed, engaging Strategy 2 (SeleniumBase UC Mode)...")
+        sb_file = download_via_seleniumbase(release["link"], target_dir)
+        if sb_file and sb_file.exists() and sb_file.stat().st_size >= (30 * 1024 * 1024):
+            dest_file = sb_file
             success = True
 
     if not success or not dest_file.exists() or dest_file.stat().st_size < (30 * 1024 * 1024):
