@@ -227,21 +227,22 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
 
     with SB(uc=True, test=True, xvfb=True, locale="en") as sb:
         # Step 1: Release page
-        print(f"[Strategy 2] Navigating to {release_url} with UC anti-bot bypass...")
-        sb.uc_open_with_reconnect(release_url, reconnect_time=6)
+        print(f"[Strategy 2] Navigating to {release_url} in CDP mode...")
+        sb.activate_cdp_mode(release_url)
+        sb.sleep(2)
 
         title = sb.get_title()
-        print(f"[Strategy 2] Page title after load: '{title}'")
+        print(f"[Strategy 2] Page title after CDP load: '{title}'")
 
         if "Just a moment" in title or sb.is_element_visible('iframe[src*="challenges.cloudflare.com"]'):
-            print("[Strategy 2] Cloudflare challenge active, solving...")
+            print("[Strategy 2] Cloudflare Turnstile detected, solving via CDP solve_captcha()...")
             try:
-                sb.uc_gui_click_captcha()
+                sb.solve_captcha()
             except Exception as e:
-                print(f"[Strategy 2] Captcha click: {e}")
-            sb.sleep(6)
+                print(f"[Strategy 2] solve_captcha exception: {e}")
+            sb.sleep(5)
             title = sb.get_title()
-            print(f"[Strategy 2] Page title after challenge wait: '{title}'")
+            print(f"[Strategy 2] Page title after solve_captcha: '{title}'")
 
         html = sb.get_page_source()
         print(f"[Strategy 2] HTML length: {len(html)}")
@@ -267,7 +268,11 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
         )
         variant_url = target_variant if target_variant.startswith("http") else f"{BASE_URL}{target_variant}"
         print(f"[Strategy 2] Opening variant page: {variant_url}...")
-        sb.uc_open_with_reconnect(variant_url, reconnect_time=4)
+        sb.activate_cdp_mode(variant_url)
+        sb.sleep(2)
+        if "Just a moment" in sb.get_title():
+            sb.solve_captcha()
+            sb.sleep(4)
 
         html_var = sb.get_page_source()
         dl_match = re.search(
@@ -281,7 +286,11 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
         staging_href = dl_match.group(1)
         staging_url = staging_href if staging_href.startswith("http") else f"{BASE_URL}{staging_href}"
         print(f"[Strategy 2] Opening staging page: {staging_url}...")
-        sb.uc_open_with_reconnect(staging_url, reconnect_time=4)
+        sb.activate_cdp_mode(staging_url)
+        sb.sleep(2)
+        if "Just a moment" in sb.get_title():
+            sb.solve_captcha()
+            sb.sleep(4)
 
         html_stage = sb.get_page_source()
         final_match = re.search(
@@ -296,24 +305,59 @@ def download_via_seleniumbase(release_url: str, dest_dir: Path) -> Path | None:
         final_url = final_href if final_href.startswith("http") else f"{BASE_URL}{final_href}"
         print(f"[Strategy 2] Resolved final download URL: {final_url}")
 
-        # Trigger download by clicking download button or navigating
-        print("[Strategy 2] Triggering file download in browser session...")
-        sb.uc_open_with_reconnect(final_url, reconnect_time=5)
+        # Extract cleared session cookies and user-agent from Chrome
+        cookies = {c["name"]: c["value"] for c in sb.get_cookies()}
+        ua = sb.get_user_agent()
+        print(f"[Strategy 2] Extracted {len(cookies)} browser cookies (including cf_clearance: {'cf_clearance' in cookies}).")
 
-        # Wait for file to download to default Chrome download directory or dest_dir
-        print("[Strategy 2] Waiting up to 60s for download to complete...")
+        # Stream download using curl_cffi with authenticated browser session
+        from curl_cffi import requests
+        dl_session = requests.Session(impersonate="chrome131")
+        dest_file = dest_dir / "instagram_bundle.apkm"
+        print(f"[Strategy 2] Streaming payload to {dest_file} with browser clearance session...")
+
+        res_dl = dl_session.get(
+            final_url,
+            cookies=cookies,
+            headers={
+                "User-Agent": ua,
+                "Referer": staging_url,
+                "Accept": "*/*",
+            },
+            stream=True,
+            timeout=120,
+        )
+
+        if res_dl.status_code == 200:
+            total = 0
+            with open(dest_file, "wb") as f:
+                for chunk in res_dl.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+                        total += len(chunk)
+                        mb = total / (1024 * 1024)
+                        if int(mb) % 10 == 0:
+                            print(f"  - Downloaded {mb:.1f} MB...", flush=True)
+
+            size_mb = total / (1024 * 1024)
+            print(f"[Strategy 2] Streamed {size_mb:.2f} MB to {dest_file}")
+            if size_mb >= 30.0:
+                return dest_file
+
+        # Fallback to in-browser download
+        print("[Strategy 2] Direct stream returned non-200, navigating browser to trigger file download...")
+        sb.activate_cdp_mode(final_url)
         for _ in range(30):
             time.sleep(2)
-            download_candidates = list(Path.home().glob("Downloads/*.apk*")) + list(dest_dir.glob("*.apk*"))
-            # Filter out temporary .crdownload files
-            completed = [f for f in download_candidates if not f.name.endswith(".crdownload") and f.stat().st_size > (30 * 1024 * 1024)]
+            candidates = list(Path.home().glob("Downloads/*.apk*")) + list(dest_dir.glob("*.apk*"))
+            completed = [f for f in candidates if not f.name.endswith(".crdownload") and f.stat().st_size > (30 * 1024 * 1024)]
             if completed:
                 target_file = completed[0]
                 dest_file = dest_dir / target_file.name
                 if target_file != dest_file:
                     import shutil
                     shutil.move(str(target_file), str(dest_file))
-                print(f"[Strategy 2] Download confirmed: {dest_file} ({dest_file.stat().st_size / (1024*1024):.2f} MB)")
+                print(f"[Strategy 2] In-browser download confirmed: {dest_file} ({dest_file.stat().st_size / (1024*1024):.2f} MB)")
                 return dest_file
 
     return None
