@@ -32,17 +32,41 @@ def parse_semver(version_str: str):
 
 def get_latest_alpha_release(target_version: str = ""):
     print(f"[Crawler] Fetching releases feed from {FEED_URL}...")
-    import urllib.request
+    xml_content = ""
+    try:
+        from curl_cffi import requests
+        session = requests.Session(impersonate="chrome131")
+        resp = session.get(FEED_URL, timeout=30)
+        if resp.status_code == 200:
+            xml_content = resp.text
+        else:
+            print(f"[Crawler] Standard feed fetch returned HTTP {resp.status_code}, retrying with APKUpdater auth...")
+            resp = session.get(
+                FEED_URL,
+                headers={
+                    "User-Agent": "APKUpdater-v0",
+                    "Authorization": "Basic YXBpLWFwa3VwZGF0ZXI6cm01cmNmcnVVakt5MDRzTXB5TVBKWFc4",
+                },
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                xml_content = resp.text
+            else:
+                print(f"[Crawler] Auth feed fetch returned HTTP {resp.status_code}")
+    except Exception as e:
+        print(f"[Crawler] curl_cffi feed fetch failed: {e}, falling back to urllib...")
 
-    req = urllib.request.Request(
-        FEED_URL,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
-        },
-    )
-
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        xml_content = resp.read().decode("utf-8")
+    if not xml_content:
+        import urllib.request
+        req = urllib.request.Request(
+            FEED_URL,
+            headers={
+                "User-Agent": "APKUpdater-v0",
+                "Authorization": "Basic YXBpLWFwa3VwZGF0ZXI6cm01cmNmcnVVakt5MDRzTXB5TVBKWFc4",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            xml_content = resp.read().decode("utf-8")
 
     root = ET.fromstring(xml_content)
     releases = []
